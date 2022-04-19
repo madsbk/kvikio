@@ -52,6 +52,8 @@ rapids_find_package(
   INSTALL_EXPORT_SET kvikio-exports
 )
 
+if(NOT TARGET cuFile::cuFile_interface)
+
 rapids_find_package(
   cuFile
   BUILD_EXPORT_SET kvikio-exports
@@ -59,6 +61,8 @@ rapids_find_package(
 )
 if(NOT cuFile_FOUND)
   message(WARNING "Building KvikIO without cuFile.h")
+endif()
+
 endif()
 
 # library targets
