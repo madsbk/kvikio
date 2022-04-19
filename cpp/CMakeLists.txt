@@ -72,8 +72,9 @@ target_include_directories(
 
 target_link_libraries(kvikio INTERFACE Threads::Threads)
 target_link_libraries(kvikio INTERFACE cuda)
-if(cuFile_FOUND)
-  target_link_libraries(kvikio INTERFACE cufile::cuFile_interface)
+# Add cuFile interface if available
+if(TARGET cuFile::cuFile_interface)
+  target_link_libraries(cudf PRIVATE cuFile::cuFile_interface)
 endif()
 target_link_libraries(kvikio INTERFACE dl)
 target_compile_features(kvikio INTERFACE cxx_std_17)
