@@ -69,19 +69,20 @@ endif()
 add_library(kvikio INTERFACE)
 add_library(kvikio::kvikio ALIAS kvikio)
 
+target_compile_features(kvikio INTERFACE cxx_std_17)
 target_include_directories(
   kvikio INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
                    "$<INSTALL_INTERFACE:include>"
 )
-
 target_link_libraries(kvikio INTERFACE Threads::Threads)
 target_link_libraries(kvikio INTERFACE cuda)
+target_link_libraries(kvikio INTERFACE dl)
+
 # Add cuFile interface if available
 if(TARGET cuFile::cuFile_interface)
   target_link_libraries(cudf PRIVATE cuFile::cuFile_interface)
 endif()
-target_link_libraries(kvikio INTERFACE dl)
-target_compile_features(kvikio INTERFACE cxx_std_17)
+
 
 # optionally build examples
 if(KvikIO_BUILD_EXAMPLES)
