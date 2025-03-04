@@ -79,6 +79,10 @@ class NvCompBatchCodec(CudaCodec):
         temp_size = self._algo.get_compress_temp_size(num_chunks, max_chunk_size)
         comp_chunk_size = self._algo.get_compress_chunk_size(max_chunk_size)
 
+        print("encode_batch() - buf_sizes: ", buf_sizes)
+        print("encode_batch() - max_chunk_size: ", max_chunk_size)
+        print("encode_batch() - comp_chunk_size: ", comp_chunk_size)
+
         # Prepare data and size buffers.
         # uncomp_chunks is used as a container that stores pointers to actual chunks.
         # nvCOMP requires this and sizes buffers to be in GPU memory.
@@ -157,6 +161,9 @@ class NvCompBatchCodec(CudaCodec):
             comp_chunk_sizes,
             self._stream,
         )
+        print("decode_batch() - bufs: ", bufs)
+        print("decode_batch() - comp_chunk_sizes: ", comp_chunk_sizes)
+        print("decode_batch() - uncomp_chunk_sizes: ", uncomp_chunk_sizes)
 
         # Check whether the uncompressed chunks are all the same size.
         # cupy.unique returns sorted sizes.
