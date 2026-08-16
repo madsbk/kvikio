@@ -30,7 +30,7 @@ from kvikio.remote_file import (
     infer_remote_endpoint_type,
     is_remote_file_available,
 )
-from kvikio.statistics import Summary, SummaryMonitor
+from kvikio.statistics import Summary, SummaryMonitor, TimeSeriesMonitor
 from kvikio.stream import stream_deregister, stream_register
 from kvikio.utils import kvikio_deprecation_notice
 
@@ -49,6 +49,7 @@ __all__ = [
     "nsys_plugin_search_dir",
     "RemoteEndpointType",
     "RemoteFile",
+    "TimeSeriesMonitor",
     "Summary",
     "SummaryMonitor",
     "stream_register",

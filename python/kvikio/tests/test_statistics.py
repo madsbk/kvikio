@@ -254,3 +254,35 @@ def test_derived_values(a_file):
     assert summary.busy_bytes_per_sec * summary.busy_fraction == pytest.approx(
         whole_span, rel=0.01
     )
+
+
+def test_time_series_adds_up(a_file):
+    path, nbytes = a_file
+    buffer = np.empty(nbytes // 8, dtype="u8")
+
+    with kvikio.TimeSeriesMonitor(resolution_ms=2) as monitor:
+        with kvikio.CuFile(path, "r") as f:
+            for _ in range(4):
+                f.read(buffer)
+                time.sleep(0.005)
+
+    intervals = monitor.take()
+    assert monitor.stats()[1] == 0, "intervals were dropped"
+    assert len(intervals["num_ops"]) == monitor.stats()[0]
+    # Nothing is lost between the intervals and nothing is counted twice.
+    assert sum(intervals["num_ops"]) == 4
+    assert sum(intervals["bytes_transferred"]) == 4 * nbytes
+    # The intervals abut, so the series has no holes in it.
+    assert intervals["start_unix_ns"][1:] == intervals["end_unix_ns"][:-1]
+    # Wall clock, so the series lines up with anything else that is timestamped.
+    assert abs(time.time_ns() - intervals["start_unix_ns"][0]) < 60e9
+
+
+def test_time_series_takes_leave_the_monitor_empty(a_file):
+    monitor = kvikio.TimeSeriesMonitor(resolution_ms=2)
+    time.sleep(0.02)
+    # Intervals that went by with nothing in them are part of the series.
+    assert len(monitor.take()["num_ops"]) > 0
+    monitor.stop()
+    monitor.take()
+    assert len(monitor.take()["num_ops"]) == 0

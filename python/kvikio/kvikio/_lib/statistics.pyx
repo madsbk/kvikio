@@ -7,6 +7,7 @@
 from libc.stdint cimport int64_t, uint64_t
 from libcpp.memory cimport make_unique, unique_ptr
 from libcpp.string cimport string
+from libcpp.vector cimport vector
 
 
 cdef extern from "<kvikio/observation.hpp>" nogil:
@@ -212,3 +213,92 @@ cdef class SummaryMonitor:
     def stop(self) -> None:
         with nogil:
             self._handle.get().stop()
+
+
+cdef extern from "<kvikio/statistics/summary.hpp>" nogil:
+    cdef cppclass cpp_InFlight "kvikio::statistics::InFlight":
+        uint64_t num_ops
+        uint64_t bytes
+
+
+cdef extern from "<kvikio/statistics/time_series.hpp>" nogil:
+    cdef cppclass cpp_Interval "kvikio::statistics::Interval":
+        cpp_Summary totals
+        cpp_InFlight in_flight
+
+    cdef cppclass cpp_TimeSeriesOptions "kvikio::statistics::TimeSeriesOptions":
+        cpp_Duration resolution
+        size_t capacity
+
+    cdef cppclass cpp_TimeSeriesStats "kvikio::statistics::TimeSeriesStats":
+        uint64_t intervals_taken
+        uint64_t intervals_dropped
+
+    cdef cppclass cpp_TimeSeriesMonitor "kvikio::statistics::TimeSeriesMonitor":
+        cpp_TimeSeriesMonitor(cpp_TimeSeriesOptions options) except +
+        vector[cpp_Interval] take() except +
+        void stop() except +
+        cpp_TimeSeriesStats stats() except +
+
+
+cdef extern from "<chrono>" nogil:
+    cpp_Duration to_duration "std::chrono::nanoseconds"(int64_t nanoseconds)
+
+
+cdef class TimeSeriesMonitor:
+    """Wrapper of the C++ class kvikio::statistics::TimeSeriesMonitor"""
+
+    cdef unique_ptr[cpp_TimeSeriesMonitor] _handle
+
+    def __cinit__(self, int64_t resolution_ns, size_t capacity):
+        cdef cpp_TimeSeriesOptions options
+        options.resolution = to_duration(resolution_ns)
+        options.capacity = capacity
+        self._handle = make_unique[cpp_TimeSeriesMonitor](options)
+
+    def stop(self) -> None:
+        with nogil:
+            self._handle.get().stop()
+
+    def stats(self) -> tuple:
+        cdef cpp_TimeSeriesStats ret = self._handle.get().stats()
+        return (ret.intervals_taken, ret.intervals_dropped)
+
+    def take(self) -> dict:
+        """One list per field, which is what a plot or a dataframe wants."""
+        cdef vector[cpp_Interval] intervals = self._handle.get().take()
+        cdef size_t i
+        cdef size_t n = intervals.size()
+        out = {
+            name: [0] * n
+            for name in (
+                "start_unix_ns", "end_unix_ns", "num_ops", "num_reads", "num_writes",
+                "bytes_requested", "bytes_transferred", "bytes_read", "bytes_written",
+                "num_errors", "busy_ns", "total_duration_ns", "in_flight",
+                "in_flight_bytes",
+            )
+        }
+        for i in range(n):
+            out["start_unix_ns"][i] = system_to_ns(
+                intervals[i].totals.anchor.to_wall_clock(
+                    intervals[i].totals.start
+                ).time_since_epoch()
+            ).count()
+            out["end_unix_ns"][i] = system_to_ns(
+                intervals[i].totals.anchor.to_wall_clock(
+                    intervals[i].totals.end
+                ).time_since_epoch()
+            ).count()
+            out["num_ops"][i] = intervals[i].totals.num_ops
+            out["num_reads"][i] = intervals[i].totals.num_reads
+            out["num_writes"][i] = intervals[i].totals.num_writes
+            out["bytes_requested"][i] = intervals[i].totals.bytes_requested
+            out["bytes_transferred"][i] = intervals[i].totals.bytes_transferred
+            out["bytes_read"][i] = intervals[i].totals.bytes_read
+            out["bytes_written"][i] = intervals[i].totals.bytes_written
+            out["num_errors"][i] = intervals[i].totals.num_errors
+            out["busy_ns"][i] = intervals[i].totals.busy.count()
+            out["total_duration_ns"][i] = intervals[i].totals.total_duration.count()
+            out["in_flight"][i] = intervals[i].in_flight.num_ops
+            out["in_flight_bytes"][i] = intervals[i].in_flight.bytes
+        return out
