@@ -29,7 +29,7 @@ from kvikio.remote_file import (
     infer_remote_endpoint_type,
     is_remote_file_available,
 )
-from kvikio.statistics import Summary, SummaryMonitor
+from kvikio.statistics import SamplingMonitor, Summary, SummaryMonitor
 from kvikio.stream import stream_deregister, stream_register
 from kvikio.utils import kvikio_deprecation_notice
 
@@ -47,6 +47,7 @@ __all__ = [
     "kvikio_deprecation_notice",
     "RemoteEndpointType",
     "RemoteFile",
+    "SamplingMonitor",
     "Summary",
     "SummaryMonitor",
     "stream_register",

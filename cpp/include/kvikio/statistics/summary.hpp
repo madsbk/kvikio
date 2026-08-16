@@ -128,6 +128,16 @@ struct Summary {
   [[nodiscard]] Duration mean_duration() const noexcept;
 
   /**
+   * @brief Add one completed operation to these totals.
+   *
+   * Every field a completion contributes to, `busy` excepted, which is a union over time rather
+   * than a sum over operations.
+   *
+   * @param observation The completed operation.
+   */
+  void add(Observation const& observation) noexcept;
+
+  /**
    * @brief Totals for the interval between an earlier reading and this one.
    *
    * Every field is the difference of the two readings. `total_duration` is the exception: an
@@ -192,6 +202,16 @@ struct Summary {
    * @return The report, one field per line, newline-terminated.
    */
   [[nodiscard]] std::string report() const;
+};
+
+/**
+ * @brief What has started and not yet finished, at an instant.
+ */
+struct InFlight {
+  /// Operations started and not yet completed.
+  std::uint64_t num_ops{};
+  /// Bytes those operations asked for.
+  std::uint64_t bytes{};
 };
 
 /**
@@ -334,6 +354,17 @@ class SummaryMonitor final : private kvikio::Monitor {
   [[nodiscard]] Summary since(Summary const& previous) const;
 
   /**
+   * @brief What is in flight at this instant.
+   *
+   * Unlike everything in `Summary`, which is counted as operations complete, this is what is
+   * happening right now. An operation longer than the gap between two readings is in every
+   * reading it spans, so its bytes are visible while it runs rather than only where it lands.
+   *
+   * @return The operations and their bytes. Both zero once the monitor has been stopped.
+   */
+  [[nodiscard]] InFlight in_flight() const noexcept;
+
+  /**
    * @brief Stop counting. Idempotent, and one-way, there is no resuming.
    *
    * The totals are final once this returns, and `get()` keeps returning them. The measured span
@@ -418,6 +449,9 @@ class SummaryMonitor final : private kvikio::Monitor {
     /// Busy time as of `now`, including the stretch still open.
     [[nodiscard]] Duration read(TimePoint now);
 
+    /// Operations started and not yet completed.
+    [[nodiscard]] std::uint64_t in_flight() const noexcept;
+
    private:
     /// Busy time from the stretches that have closed.
     Duration _closed_busy{};
@@ -440,6 +474,9 @@ class SummaryMonitor final : private kvikio::Monitor {
 
   /// Mutable because a reading advances the tracker's high-water mark.
   mutable BusyTracker _busy;
+
+  /// What the operations `_busy` counts as in flight asked for.
+  std::uint64_t _in_flight_bytes{0};
 };
 
 }  // namespace statistics

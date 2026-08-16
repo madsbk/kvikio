@@ -84,6 +84,8 @@ kvikio_add_test(NAME OBSERVATION_TEST SOURCES test_observation.cpp)
 
 kvikio_add_test(NAME SUMMARY_TEST SOURCES test_summary.cpp)
 
+kvikio_add_test(NAME SAMPLING_TEST SOURCES test_sampling.cpp)
+
 kvikio_add_test(NAME STRING_UTILS_TEST SOURCES test_string_utils.cpp)
 
 kvikio_add_test(NAME MMAP_TEST SOURCES test_mmap.cpp)

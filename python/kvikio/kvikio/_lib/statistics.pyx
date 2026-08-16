@@ -7,6 +7,7 @@
 from libc.stdint cimport int64_t, uint64_t
 from libcpp.memory cimport make_unique, unique_ptr
 from libcpp.string cimport string
+from libcpp.vector cimport vector
 
 
 cdef extern from "<kvikio/observation.hpp>" nogil:
@@ -212,3 +213,92 @@ cdef class SummaryMonitor:
     def stop(self) -> None:
         with nogil:
             self._handle.get().stop()
+
+
+cdef extern from "<kvikio/statistics/summary.hpp>" nogil:
+    cdef cppclass cpp_InFlight "kvikio::statistics::InFlight":
+        uint64_t num_ops
+        uint64_t bytes
+
+
+cdef extern from "<kvikio/statistics/sampling.hpp>" nogil:
+    cdef cppclass cpp_Sample "kvikio::statistics::Sample":
+        cpp_Summary totals
+        cpp_InFlight in_flight
+
+    cdef cppclass cpp_SamplingOptions "kvikio::statistics::SamplingOptions":
+        cpp_Duration resolution
+        size_t capacity
+
+    cdef cppclass cpp_SamplingStats "kvikio::statistics::SamplingStats":
+        uint64_t samples_taken
+        uint64_t samples_dropped
+
+    cdef cppclass cpp_SamplingMonitor "kvikio::statistics::SamplingMonitor":
+        cpp_SamplingMonitor(cpp_SamplingOptions options) except +
+        vector[cpp_Sample] take() except +
+        void stop() except +
+        cpp_SamplingStats stats() except +
+
+
+cdef extern from "<chrono>" nogil:
+    cpp_Duration to_duration "std::chrono::nanoseconds"(int64_t nanoseconds)
+
+
+cdef class SamplingMonitor:
+    """Wrapper of the C++ class kvikio::statistics::SamplingMonitor"""
+
+    cdef unique_ptr[cpp_SamplingMonitor] _handle
+
+    def __cinit__(self, int64_t resolution_ns, size_t capacity):
+        cdef cpp_SamplingOptions options
+        options.resolution = to_duration(resolution_ns)
+        options.capacity = capacity
+        self._handle = make_unique[cpp_SamplingMonitor](options)
+
+    def stop(self) -> None:
+        with nogil:
+            self._handle.get().stop()
+
+    def stats(self) -> tuple:
+        cdef cpp_SamplingStats ret = self._handle.get().stats()
+        return (ret.samples_taken, ret.samples_dropped)
+
+    def take(self) -> dict:
+        """One list per field, which is what a plot or a dataframe wants."""
+        cdef vector[cpp_Sample] samples = self._handle.get().take()
+        cdef size_t i
+        cdef size_t n = samples.size()
+        out = {
+            name: [0] * n
+            for name in (
+                "start_unix_ns", "end_unix_ns", "num_ops", "num_reads", "num_writes",
+                "bytes_requested", "bytes_transferred", "bytes_read", "bytes_written",
+                "num_errors", "busy_ns", "total_duration_ns", "in_flight",
+                "in_flight_bytes",
+            )
+        }
+        for i in range(n):
+            out["start_unix_ns"][i] = system_to_ns(
+                samples[i].totals.anchor.to_wall_clock(
+                    samples[i].totals.start
+                ).time_since_epoch()
+            ).count()
+            out["end_unix_ns"][i] = system_to_ns(
+                samples[i].totals.anchor.to_wall_clock(
+                    samples[i].totals.end
+                ).time_since_epoch()
+            ).count()
+            out["num_ops"][i] = samples[i].totals.num_ops
+            out["num_reads"][i] = samples[i].totals.num_reads
+            out["num_writes"][i] = samples[i].totals.num_writes
+            out["bytes_requested"][i] = samples[i].totals.bytes_requested
+            out["bytes_transferred"][i] = samples[i].totals.bytes_transferred
+            out["bytes_read"][i] = samples[i].totals.bytes_read
+            out["bytes_written"][i] = samples[i].totals.bytes_written
+            out["num_errors"][i] = samples[i].totals.num_errors
+            out["busy_ns"][i] = samples[i].totals.busy.count()
+            out["total_duration_ns"][i] = samples[i].totals.total_duration.count()
+            out["in_flight"][i] = samples[i].in_flight.num_ops
+            out["in_flight_bytes"][i] = samples[i].in_flight.bytes
+        return out

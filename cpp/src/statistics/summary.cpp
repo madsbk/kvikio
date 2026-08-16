@@ -39,6 +39,30 @@ double Summary::busy_fraction() const noexcept
   return static_cast<double>(busy.count()) / static_cast<double>(span.count());
 }
 
+void Summary::add(Observation const& observation) noexcept
+{
+  ++num_ops;
+  bytes_requested += observation.size;
+  bytes_transferred += observation.bytes_transferred;
+  total_duration += observation.duration();
+  auto const backend = static_cast<std::size_t>(observation.backend);
+  if (backend < num_io_backends) {
+    auto& totals = by_backend[backend];
+    ++totals.num_ops;
+    totals.bytes_transferred += observation.bytes_transferred;
+    totals.total_duration += observation.duration();
+    if (!observation.ok) { ++totals.num_errors; }
+  }
+  if (observation.direction == TransferDirection::READ) {
+    ++num_reads;
+    bytes_read += observation.bytes_transferred;
+  } else {
+    ++num_writes;
+    bytes_written += observation.bytes_transferred;
+  }
+  if (!observation.ok) { ++num_errors; }
+}
+
 Duration Summary::wall() const noexcept { return end > start ? end - start : Duration::zero(); }
 
 Duration Summary::mean_duration() const noexcept
@@ -310,6 +334,7 @@ void SummaryMonitor::on_start(Observation const& observation) noexcept
   std::lock_guard const lock{_mutex};
   if (start < _registered) { return; }
   _busy.on_start(start);
+  _in_flight_bytes += observation.size;
 }
 
 void SummaryMonitor::on_finish(Observation const& observation) noexcept
@@ -320,7 +345,11 @@ void SummaryMonitor::on_finish(Observation const& observation) noexcept
   if (observation.start < _registered) { return; }
 
   // Close the operation first, and unconditionally, so that the tracker's in-flight count stays
-  // balanced even for a record the counters below decline.
+  // balanced even for a record the counters below decline. Its guard against an unbalanced
+  // report is what the bytes are subtracted under too.
+  if (_busy.in_flight() > 0) {
+    _in_flight_bytes -= std::min(_in_flight_bytes, static_cast<std::uint64_t>(observation.size));
+  }
   _busy.on_finish(observation.end);
 
   // A `reset()` since the operation began has moved the span on, and the operation is not part of
@@ -328,26 +357,7 @@ void SummaryMonitor::on_finish(Observation const& observation) noexcept
   // holds only the part that followed the reset.
   if (observation.start < _totals.start) { return; }
 
-  ++_totals.num_ops;
-  _totals.bytes_requested += observation.size;
-  _totals.bytes_transferred += observation.bytes_transferred;
-  _totals.total_duration += observation.duration();
-  auto const backend = static_cast<std::size_t>(observation.backend);
-  if (backend < num_io_backends) {
-    auto& totals = _totals.by_backend[backend];
-    ++totals.num_ops;
-    totals.bytes_transferred += observation.bytes_transferred;
-    totals.total_duration += observation.duration();
-    if (!observation.ok) { ++totals.num_errors; }
-  }
-  if (observation.direction == TransferDirection::READ) {
-    ++_totals.num_reads;
-    _totals.bytes_read += observation.bytes_transferred;
-  } else {
-    ++_totals.num_writes;
-    _totals.bytes_written += observation.bytes_transferred;
-  }
-  if (!observation.ok) { ++_totals.num_errors; }
+  _totals.add(observation);
 }
 
 Summary SummaryMonitor::get() const
@@ -403,6 +413,17 @@ Summary Summary::since(Summary const& previous) const
 }
 
 Summary SummaryMonitor::since(Summary const& previous) const { return get().since(previous); }
+
+std::uint64_t SummaryMonitor::BusyTracker::in_flight() const noexcept { return _in_flight; }
+
+InFlight SummaryMonitor::in_flight() const noexcept
+{
+  std::lock_guard const lock{_mutex};
+  // Stopping unregisters, so an operation still open will never report its finish and would
+  // otherwise be in flight for good.
+  if (_stopped_end != TimePoint{}) { return InFlight{}; }
+  return InFlight{.num_ops = _busy.in_flight(), .bytes = _in_flight_bytes};
+}
 
 void SummaryMonitor::reset()
 {

@@ -318,3 +318,103 @@ class SummaryMonitor:
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.stop()
+
+
+class SamplingMonitor:
+    """Record what KvikIO is doing at a fixed rate, and keep it
+
+    A :class:`SummaryMonitor` reading taken every interval, so a run's shape over time is
+    visible and not only its totals. The cost is a fixed amount per second, whatever the
+    workload does.
+
+    Nothing is written anywhere. Call :meth:`take` to get the samples, one list per
+    field.
+
+    Parameters
+    ----------
+    resolution_ms : float, optional
+        Time one sample covers. The totals are counted rather than sampled, so they are
+        exact whatever this is set to. What it sets is how precisely a completion is
+        placed on the time axis, since an operation's bytes belong to the interval it
+        completed in. A bandwidth derived from one interval is an average only where
+        several operations completed in it, and ``in_flight_bytes`` is what the rest
+        have instead. Memory follows from it rather than from what the workload does,
+        so a run of seconds to minutes wants the default and nothing finer than a plot
+        can show.
+    capacity : int, optional
+        Samples held before the oldest are dropped. The default holds a quarter of an
+        hour at the default resolution.
+
+    Notes
+    -----
+    A sample holds two kinds of quantity. The totals are counted, so they are exact
+    whatever an operation's duration. ``in_flight`` and ``in_flight_bytes`` are sampled,
+    so they miss operations shorter than the interval and see longer ones in every
+    sample they span. No operations in flight against many completed means the work is
+    finer-grained than the interval.
+
+    Examples
+    --------
+    >>> import kvikio
+    >>> monitor = kvikio.SamplingMonitor()
+    >>> ...
+    >>> monitor.stop()
+    >>> samples = monitor.take()
+    >>> samples["in_flight"]
+    [0, 12, 31, 8, 0]
+    """
+
+    __slots__ = "_handle"
+
+    def __init__(self, resolution_ms: float = 10.0, capacity: int = 100_000) -> None:
+        self._handle = _statistics.SamplingMonitor(int(resolution_ms * 1e6), capacity)
+
+    def take(self) -> dict:
+        """Take the samples, leaving the monitor empty
+
+        The interval in progress is kept back until it is complete, so consecutive calls
+        partition the run rather than sharing an interval. Taking repeatedly loses
+        nothing, and a call after :meth:`stop` hands out the last of it::
+
+            while running:
+                write(monitor.take())
+                time.sleep(a_while)
+            monitor.stop()
+            write(monitor.take())
+
+        Take at least once every ``capacity`` intervals of wall clock, or intervals are
+        dropped and :meth:`stats` says how many.
+
+        Returns
+        -------
+        dict
+            One list per field, oldest first: ``start_unix_ns``, ``end_unix_ns``,
+            ``num_ops``, ``num_reads``, ``num_writes``, ``bytes_requested``,
+            ``bytes_transferred``, ``bytes_read``, ``bytes_written``, ``num_errors``,
+            ``busy_ns``, ``total_duration_ns``, ``in_flight`` and ``in_flight_bytes``.
+        """
+        return self._handle.take()
+
+    def stop(self) -> None:
+        """Stop sampling and take a final sample of the tail
+
+        Idempotent.
+        """
+        self._handle.stop()
+
+    def stats(self) -> tuple[int, int]:
+        """What has been sampled so far
+
+        Returns
+        -------
+        tuple
+            ``(samples_taken, samples_dropped)``. Dropped samples are not zero when
+            nobody collected them and the buffer filled.
+        """
+        return self._handle.stats()
+
+    def __enter__(self) -> "SamplingMonitor":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.stop()
