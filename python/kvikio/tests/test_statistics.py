@@ -254,3 +254,72 @@ def test_derived_values(a_file):
     assert summary.busy_bytes_per_sec * summary.busy_fraction == pytest.approx(
         whole_span, rel=0.01
     )
+
+
+def test_internals_are_those_of_the_span(a_file):
+    path, nbytes = a_file
+    buffer = np.empty(nbytes // 8, dtype="u8")
+
+    # Warm the bounce buffers first, so anything the monitor reports was paid inside it.
+    with kvikio.CuFile(path, "r") as f:
+        f.read(buffer)
+
+    monitor = kvikio.SummaryMonitor()
+    assert all(value == 0 for value in monitor.get().internals.values()), (
+        "a monitor starts owing nothing"
+    )
+    with kvikio.CuFile(path, "r") as f:
+        f.read(buffer)
+
+    spent = monitor.get().internals
+    assert set(spent) == {
+        "bounce_buffer_acquisitions",
+        "bounce_buffer_misses",
+        "bounce_buffer_allocating_ns",
+        "bounce_buffer_bytes_allocated",
+        "bounce_buffer_bytes_freed",
+        "bounce_buffer_bytes_held",
+        "posix_calls",
+        "posix_bytes",
+        "posix_transferring_ns",
+        "posix_short_calls",
+        "staging_copies",
+        "staging_bytes",
+        "staging_copying_ns",
+        "alignment_copies",
+        "alignment_bytes",
+        "alignment_buffer_bytes_allocated",
+        "alignment_buffer_bytes_freed",
+        "cufile_registrations",
+        "cufile_registering_ns",
+        "remote_size_probes",
+        "remote_size_probing_ns",
+        "http_connections",
+        "http_dns_ns",
+        "http_connecting_ns",
+        "http_tls_ns",
+        "http_transfers",
+        "http_bytes",
+        "http_waiting_ns",
+        "http_receiving_ns",
+        "http_retries",
+        "http_retry_backoff_ns",
+        "remote_deferred_for_buffer",
+        "remote_waiting_for_buffer_ns",
+        "remote_deferred_for_slot",
+        "remote_waiting_for_slot_ns",
+    }
+    # Buffers are only freed when the configured size changes, so held is what was allocated.
+    assert (
+        spent["bounce_buffer_bytes_held"]
+        == spent["bounce_buffer_bytes_allocated"] - spent["bounce_buffer_bytes_freed"]
+    )
+    # The summary carries the I/O and what KvikIO spent to do it.
+    report = str(monitor.get())
+    assert report.startswith("KvikIO I/O summary")
+    if spent["bounce_buffer_acquisitions"]:
+        assert "bounce buffer" in report
+        assert json.loads(monitor.get().to_json())["internals"]
+
+    monitor.reset()
+    assert all(value == 0 for value in monitor.get().internals.values())

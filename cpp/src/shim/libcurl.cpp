@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -24,6 +25,7 @@
 #include <kvikio/logger.hpp>
 #include <kvikio/logger_macros.hpp>
 #include <kvikio/shim/libcurl.hpp>
+#include <kvikio/statistics/internals.hpp>
 #include <kvikio/utils.hpp>
 
 namespace kvikio {
@@ -122,6 +124,45 @@ std::string CurlHandle::error_message() const
   return std::string{_errbuf};
 }
 
+namespace detail {
+
+void count_http_transfer_of(CURL* easy) noexcept
+{
+  auto const micros = [](curl_off_t us) { return std::chrono::microseconds{us}; };
+
+  curl_off_t pretransfer{0};
+  curl_off_t starttransfer{0};
+  curl_off_t total{0};
+  curl_off_t received{0};
+  if (curl_easy_getinfo(easy, CURLINFO_PRETRANSFER_TIME_T, &pretransfer) != CURLE_OK) { return; }
+  curl_easy_getinfo(easy, CURLINFO_STARTTRANSFER_TIME_T, &starttransfer);
+  curl_easy_getinfo(easy, CURLINFO_TOTAL_TIME_T, &total);
+  curl_easy_getinfo(easy, CURLINFO_SIZE_DOWNLOAD_T, &received);
+  auto const waiting =
+    starttransfer > pretransfer ? micros(starttransfer - pretransfer) : Duration::zero();
+  auto const receiving = total > starttransfer ? micros(total - starttransfer) : Duration::zero();
+  count_http_transfer(received > 0 ? static_cast<std::uint64_t>(received) : 0, waiting, receiving);
+
+  long connections{0};
+  if (curl_easy_getinfo(easy, CURLINFO_NUM_CONNECTS, &connections) != CURLE_OK) { return; }
+  // Zero means the connection was reused, so nothing was paid here.
+  if (connections <= 0) { return; }
+
+  curl_off_t namelookup{0};
+  curl_off_t connect{0};
+  curl_off_t appconnect{0};
+  curl_easy_getinfo(easy, CURLINFO_NAMELOOKUP_TIME_T, &namelookup);
+  curl_easy_getinfo(easy, CURLINFO_CONNECT_TIME_T, &connect);
+  curl_easy_getinfo(easy, CURLINFO_APPCONNECT_TIME_T, &appconnect);
+
+  auto const connecting = connect > namelookup ? micros(connect - namelookup) : Duration::zero();
+  auto const tls        = appconnect > connect ? micros(appconnect - connect) : Duration::zero();
+  count_http_connection(
+    static_cast<std::uint64_t>(connections), micros(namelookup), connecting, tls);
+}
+
+}  // namespace detail
+
 void CurlHandle::clear_error_message() noexcept { _errbuf[0] = 0; }
 
 void CurlHandle::perform() { perform({}); }
@@ -142,9 +183,15 @@ void CurlHandle::perform(std::function<void()> const& on_retry)
     auto const outcome =
       policy.evaluate(curl_code, http_code, attempt, error_message(), "curl_easy_perform() error");
     switch (outcome.decision) {
-      case detail::RetryDecision::SUCCESS: return;
+      case detail::RetryDecision::SUCCESS:
+        // Where this transfer's time went, which libcurl measured anyway.
+        detail::count_http_transfer_of(handle());
+        return;
       case detail::RetryDecision::RETRY:
         KVIKIO_LOG_WARN(outcome.message);
+        // The sleep below is time the caller pays for that nothing else reports, since a retry
+        // that eventually succeeds is reported as a success.
+        detail::count_http_retry(outcome.delay_ms);
         if (on_retry) { on_retry(); }
         std::this_thread::sleep_for(outcome.delay_ms);
         break;

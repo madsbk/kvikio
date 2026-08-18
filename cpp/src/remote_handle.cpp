@@ -32,6 +32,7 @@
 #include <kvikio/hdfs.hpp>
 #include <kvikio/remote_handle.hpp>
 #include <kvikio/shim/libcurl.hpp>
+#include <kvikio/statistics/internals.hpp>
 #include <kvikio/utils.hpp>
 
 namespace kvikio {
@@ -169,7 +170,10 @@ std::size_t get_file_size_using_head_impl(RemoteEndpoint& endpoint, std::string 
   endpoint.setopt(curl);
   curl.setopt(CURLOPT_NOBODY, 1L);
   curl.setopt(CURLOPT_FOLLOWLOCATION, 1L);
+  // A round trip before a single byte is read, and one per file, so worth its own counter.
+  auto const before = detail::now();
   curl.perform();
+  detail::count_remote_size_probe(detail::now() - before);
   curl_off_t cl;
   curl.getinfo(CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
   KVIKIO_EXPECT(

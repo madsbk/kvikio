@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -56,12 +56,10 @@ std::size_t posix_device_read_aligned(int fd_direct_off,
 
     std::size_t nbytes_processed = std::min(nbytes_expected, nbytes_io - prefix);
 
-    KVIKIO_CUDA_DRIVER_TRY(cudaAPI::cuda_memcpy_async(
-      devPtr,
-      convert_void2deviceptr(static_cast<std::byte*>(bounce_buffer.get()) + prefix),
-      nbytes_processed,
-      stream));
-    KVIKIO_CUDA_DRIVER_TRY(cudaAPI::instance().StreamSynchronize(stream));
+    staging_copy(devPtr,
+                 convert_void2deviceptr(static_cast<std::byte*>(bounce_buffer.get()) + prefix),
+                 nbytes_processed,
+                 stream);
 
     cur_file_offset += nbytes_processed;
     devPtr += nbytes_processed;

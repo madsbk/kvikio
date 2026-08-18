@@ -178,6 +178,12 @@ struct RemoteMultiTransfer {
   // Retry bookkeeping. Number of attempts that have finished.
   std::size_t attempt{0};
 
+  // When this transfer was first held back for want of a bounce buffer, and for want of a
+  // concurrency slot. The default is the clock epoch, meaning it has not been held back for that
+  // reason. Both are counted and cleared when it is admitted.
+  std::chrono::steady_clock::time_point deferred_for_buffer_since{};
+  std::chrono::steady_clock::time_point deferred_for_slot_since{};
+
   // Earliest time this transfer may be admitted. Used to space out retries.
   // The default is the clock epoch, which is always in the past, so a freshly submitted transfer is
   // admitted immediately.

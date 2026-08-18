@@ -20,6 +20,10 @@ namespace kvikio {
  */
 class PageAlignedAllocator {
  public:
+  /// Whether the memory is pinned. Ordinary host memory, so a transfer to the device still has to
+  /// go through a staging copy.
+  static constexpr bool is_pinned{false};
+
   /**
    * @brief Allocate page-aligned host memory
    *
@@ -48,6 +52,10 @@ class PageAlignedAllocator {
  */
 class CudaPinnedAllocator {
  public:
+  /// Whether the memory is pinned. Page-locked, so the device can be copied to and from it
+  /// directly.
+  static constexpr bool is_pinned{true};
+
   /**
    * @brief Allocate CUDA pinned host memory
    *
@@ -77,6 +85,10 @@ class CudaPinnedAllocator {
  */
 class CudaPageAlignedPinnedAllocator {
  public:
+  /// Whether the memory is pinned. Page-locked, so the device can be copied to and from it
+  /// directly.
+  static constexpr bool is_pinned{true};
+
   /**
    * @brief Allocate page-aligned CUDA-registered pinned host memory
    *

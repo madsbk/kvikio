@@ -15,10 +15,12 @@
 
 #include <kvikio/bounce_buffer.hpp>
 #include <kvikio/detail/nvtx.hpp>
+#include <kvikio/detail/observation_recorder.hpp>
 #include <kvikio/detail/stream.hpp>
 #include <kvikio/detail/utils.hpp>
 #include <kvikio/error.hpp>
 #include <kvikio/shim/cuda.hpp>
+#include <kvikio/statistics/internals.hpp>
 #include <kvikio/utils.hpp>
 
 namespace kvikio::detail {
@@ -77,10 +79,17 @@ ssize_t posix_host_io(
 {
   auto pread_or_write = [](int fd, void* buf, std::size_t count, std::size_t offset) -> ssize_t {
     ssize_t nbytes{};
+    // Every branch below goes through here, so this one span is the whole of what the file system
+    // was asked for and what it took.
+    auto const before = detail::now();
     if constexpr (Operation == IOOperationType::READ) {
       nbytes = ::pread(fd, buf, count, convert_size2off(offset));
     } else {
       nbytes = ::pwrite(fd, buf, count, convert_size2off(offset));
+    }
+    if (nbytes > 0) {
+      auto const moved = static_cast<std::size_t>(nbytes);
+      count_posix_io(moved, moved < count, detail::now() - before);
     }
 
     if (nbytes == -1) {
@@ -150,6 +159,7 @@ ssize_t posix_host_io(
             if constexpr (Operation == IOOperationType::WRITE) {
               // Copy user data to aligned bounce buffer before Direct I/O write
               std::memcpy(aligned_buf, buffer, bytes_requested);
+              count_alignment_copy(bytes_requested);
             }
 
             // Perform Direct I/O using the bounce buffer
@@ -159,6 +169,7 @@ ssize_t posix_host_io(
             if constexpr (Operation == IOOperationType::READ) {
               // Copy data from bounce buffer to user buffer after Direct I/O read
               std::memcpy(buffer, aligned_buf, static_cast<std::size_t>(nbytes_processed));
+              count_alignment_copy(static_cast<std::size_t>(nbytes_processed));
             }
           } else {
             KVIKIO_NVTX_SCOPED_RANGE(op_name_dio, bytes_requested, color_dio);
@@ -183,6 +194,22 @@ ssize_t posix_host_io(
   }
 
   return convert_size2ssize(count);
+}
+
+/**
+ * @brief Copy a chunk between a bounce buffer and device memory, and wait for it.
+ *
+ * @param dst Where the bytes go.
+ * @param src Where they come from.
+ * @param nbytes How many.
+ * @param stream The stream to copy on, which is synchronized before returning.
+ */
+inline void staging_copy(CUdeviceptr dst, CUdeviceptr src, std::size_t nbytes, CUstream stream)
+{
+  auto const before = detail::now();
+  KVIKIO_CUDA_DRIVER_TRY(cudaAPI::cuda_memcpy_async(dst, src, nbytes, stream));
+  KVIKIO_CUDA_DRIVER_TRY(cudaAPI::instance().StreamSynchronize(stream));
+  count_staging_copy(nbytes, detail::now() - before);
 }
 
 /**
@@ -248,13 +275,9 @@ std::size_t posix_device_io(int fd_direct_off,
       // unaligned DIO path).
       nbytes_io = static_cast<std::size_t>(posix_host_io<IOOperationType::READ, PartialIO::YES>(
         fd_direct_off, bounce_buffer.get(), nbytes_requested, cur_file_offset, fd_direct_on));
-      KVIKIO_CUDA_DRIVER_TRY(cudaAPI::cuda_memcpy_async(
-        devPtr, convert_void2deviceptr(bounce_buffer.get()), nbytes_io, stream));
-      KVIKIO_CUDA_DRIVER_TRY(cudaAPI::instance().StreamSynchronize(stream));
+      staging_copy(devPtr, convert_void2deviceptr(bounce_buffer.get()), nbytes_io, stream);
     } else {  // Is a write operation
-      KVIKIO_CUDA_DRIVER_TRY(cudaAPI::cuda_memcpy_async(
-        convert_void2deviceptr(bounce_buffer.get()), devPtr, nbytes_requested, stream));
-      KVIKIO_CUDA_DRIVER_TRY(cudaAPI::instance().StreamSynchronize(stream));
+      staging_copy(convert_void2deviceptr(bounce_buffer.get()), devPtr, nbytes_requested, stream);
       posix_host_io<IOOperationType::WRITE, PartialIO::NO>(
         fd_direct_off, bounce_buffer.get(), nbytes_requested, cur_file_offset, fd_direct_on);
     }

@@ -21,11 +21,13 @@
 #include <vector>
 
 #include <kvikio/detail/nvtx.hpp>
+#include <kvikio/detail/observation_recorder.hpp>
 #include <kvikio/detail/utils.hpp>
 #include <kvikio/error.hpp>
 #include <kvikio/file_handle.hpp>
 #include <kvikio/file_utils.hpp>
 #include <kvikio/shim/cufile.hpp>
+#include <kvikio/statistics/internals.hpp>
 
 namespace kvikio {
 
@@ -104,9 +106,13 @@ std::optional<CUfileError_t> CUFileHandleWrapper::register_handle(int fd) noexce
   CUfileDescr_t desc{};  // It is important to set to zero!
   desc.type = CU_FILE_HANDLE_TYPE_OPAQUE_FD;
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
-  desc.handle.fd = fd;
-  error_code     = cuFileAPI::instance().HandleRegister(&_handle, &desc);
-  if (error_code.value().err == CU_FILE_SUCCESS) { _registered = true; }
+  desc.handle.fd    = fd;
+  auto const before = detail::now();
+  error_code        = cuFileAPI::instance().HandleRegister(&_handle, &desc);
+  if (error_code.value().err == CU_FILE_SUCCESS) {
+    _registered = true;
+    detail::count_cufile_registration(detail::now() - before);
+  }
   return error_code;
 }
 

@@ -31,6 +31,11 @@ by a person:
       backend MMAP         unused
       backend REMOTE_HTTP  unused
       backend REMOTE_HDFS  unused
+      bounce buffer        5 acquisitions, 2 allocated in 5.45 ms, 32 MiB held
+      unaligned buffers    0 copies, 0 B, 0 B held
+      file system          5 calls, 3.12 KiB, 19.29 us, 0 short
+      device staging       5 copies, 3.12 KiB, 44.02 us
+      cufile               0 files, 0 s
 
 Busy time and bandwidth
 -----------------------
@@ -42,6 +47,27 @@ the gaps between calls count as idle.
 reads for 10 ms and then computes for 90 ms is doing I/O at its storage's speed for a
 tenth of its life, and dividing by the wall time would report it as ten times slower than
 it is. Multiply by :attr:`~Summary.busy_fraction` to recover the whole-span rate.
+
+What KvikIO spent on itself
+---------------------------
+
+The rows below the backends are :attr:`~Summary.internals`, the work KvikIO did on its own
+behalf rather than on the run's. They are what tells a slow endpoint apart from a bounce
+buffer that had to be allocated, or from a transfer waiting for one to come free. In the
+report above they say that 5.45 ms of the 5.66 ms busy time went on allocating two bounce
+buffers, and only 63 us on the file system and the copies to the device.
+
+They come in three groups, buffers, local I/O and remote I/O, and a group appears only if
+the run touched it. A zero inside a group that did appear is an answer: ``0 retries`` and
+``0 transfers`` waiting for a slot say the run was not retrying and was never held back.
+A group that never ran says nothing, so a local program is not told what TLS cost it.
+
+To see every row whatever the run did, which is one way to see what is recorded at all::
+
+    print(summary.report(all_rows=True))
+
+The counters run for the life of the process and a summary holds the part of them that
+falls inside its span, so :meth:`~Summary.since` differences them like everything else.
 
 Getting a summary out of the process
 ------------------------------------

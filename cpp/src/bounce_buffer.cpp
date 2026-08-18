@@ -13,10 +13,12 @@
 #include <kvikio/bounce_buffer.hpp>
 #include <kvikio/defaults.hpp>
 #include <kvikio/detail/nvtx.hpp>
+#include <kvikio/detail/observation_recorder.hpp>
 #include <kvikio/detail/utils.hpp>
 #include <kvikio/error.hpp>
 #include <kvikio/logger.hpp>
 #include <kvikio/shim/cuda.hpp>
+#include <kvikio/statistics/internals.hpp>
 
 namespace kvikio {
 
@@ -137,6 +139,7 @@ void BounceBufferPool<Allocator>::_deallocate_buffers(std::stack<void*>& buffers
   KVIKIO_NVTX_FUNC_RANGE();
   while (!buffers.empty()) {
     _allocator.deallocate(buffers.top(), buffer_size);
+    detail::count_bounce_buffer_freed(Allocator::is_pinned, buffer_size);
     buffers.pop();
   }
 }
@@ -183,8 +186,14 @@ BounceBufferPool<Allocator>::Buffer BounceBufferPool<Allocator>::get()
 
   _deallocate_buffers(stale_buffers, stale_size);
 
-  if (reused_buffer != nullptr) { return Buffer(this, reused_buffer, buffer_size); }
-  auto* buffer = _allocator.allocate(buffer_size);
+  if (reused_buffer != nullptr) {
+    detail::count_bounce_buffer(Allocator::is_pinned, false, Duration::zero(), 0);
+    return Buffer(this, reused_buffer, buffer_size);
+  }
+  // Nothing to reuse, so this one is paid for. Pinned memory means a call into CUDA.
+  auto const before = detail::now();
+  auto* buffer      = _allocator.allocate(buffer_size);
+  detail::count_bounce_buffer(Allocator::is_pinned, true, detail::now() - before, buffer_size);
   return Buffer(this, buffer, buffer_size);
 }
 
@@ -210,7 +219,10 @@ void BounceBufferPool<Allocator>::put(void* buffer, std::size_t size) noexcept
     }
 
     _deallocate_buffers(stale_buffers, stale_size);
-    if (is_incoming_stale) { _allocator.deallocate(buffer, size); }
+    if (is_incoming_stale) {
+      _allocator.deallocate(buffer, size);
+      detail::count_bounce_buffer_freed(Allocator::is_pinned, size);
+    }
   } catch (std::exception const& e) {
     KVIKIO_LOG_ERROR(std::string("BounceBufferPool::put failed: ") + e.what());
   } catch (...) {

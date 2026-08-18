@@ -211,6 +211,24 @@ __attribute__((noinline)) inline std::string fix_conda_file_path_hack(std::strin
 }
 }  // namespace detail
 
+namespace detail {
+
+/**
+ * @brief Record where a finished transfer's time went.
+ *
+ * The bytes received, the wait for the first of them, and the time the rest took. A transfer that
+ * had to open a connection also records what resolving, connecting and shaking hands cost, which a
+ * transfer that reused one paid nothing for.
+ *
+ * libcurl measures all of this whether or not anybody asks, and reports the phases cumulatively
+ * from the start of the transfer, so they are differenced here.
+ *
+ * @param easy The handle the transfer ran on, after it completed.
+ */
+void count_http_transfer_of(CURL* easy) noexcept;
+
+}  // namespace detail
+
 /**
  * @brief Create a new curl handle.
  *

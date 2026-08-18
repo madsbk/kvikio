@@ -28,6 +28,7 @@
 #include <kvikio/remote_handle.hpp>
 #include <kvikio/shim/cuda.hpp>
 #include <kvikio/shim/libcurl.hpp>
+#include <kvikio/statistics/internals.hpp>
 #include <kvikio/utils.hpp>
 
 namespace kvikio::detail {
@@ -246,6 +247,20 @@ void MultiPollReactor::io_thread_main()
       // than because its backoff has not elapsed for retry.
       bool deferred_for_resource = false;
       auto const walk_start      = std::chrono::steady_clock::now();
+      // Note the first walk at which a transfer was held back for a resource, so that the wait can
+      // be counted when it is finally admitted. Holding back for backoff is not a wait for a
+      // resource and is not noted.
+      auto const note_wait = [&walk_start](std::chrono::steady_clock::time_point& since) noexcept {
+        if (since == std::chrono::steady_clock::time_point{}) { since = walk_start; }
+      };
+      // The wait ends at `walk_start` rather than now(), since it spanned whole poll cycles and
+      // what this walk has taken so far is noise against them.
+      auto const count_wait = [&walk_start](std::chrono::steady_clock::time_point& since,
+                                            auto&& count) noexcept {
+        if (since == std::chrono::steady_clock::time_point{}) { return; }
+        count(walk_start - since);
+        since = {};
+      };
       while (!_pending.empty()) {
         auto transfer = std::move(_pending.front());
         _pending.pop_front();
@@ -267,6 +282,7 @@ void MultiPollReactor::io_thread_main()
               std::find(exhausted_ctxs.begin(), exhausted_ctxs.end(), transfer->device_ctx) !=
                 exhausted_ctxs.end()) {
             deferred_for_resource = true;
+            note_wait(transfer->deferred_for_buffer_since);
             deferred_transfers.push_back(std::move(transfer));
             continue;
           }
@@ -276,8 +292,11 @@ void MultiPollReactor::io_thread_main()
           auto slot = _request_limiter.try_acquire();
           if (!slot) {
             deferred_for_resource = true;
+            note_wait(transfer->deferred_for_slot_since);
             deferred_transfers.push_back(std::move(transfer));
+            // Everything behind it is queued behind the same exhausted limiter.
             while (!_pending.empty()) {
+              note_wait(_pending.front()->deferred_for_slot_since);
               deferred_transfers.push_back(std::move(_pending.front()));
               _pending.pop_front();
             }
@@ -296,6 +315,7 @@ void MultiPollReactor::io_thread_main()
             if (!bounce_buffer.has_value()) {
               deferred_for_resource = true;
               exhausted_ctxs.push_back(transfer->device_ctx);
+              note_wait(transfer->deferred_for_buffer_since);
               deferred_transfers.push_back(std::move(transfer));
               continue;
             }
@@ -314,6 +334,8 @@ void MultiPollReactor::io_thread_main()
           }
           transfer->attachment = CurlMultiAttachment{_curl_multi, easy};
           transfer->slot       = std::move(slot);
+          count_wait(transfer->deferred_for_buffer_since, count_remote_deferred_for_buffer);
+          count_wait(transfer->deferred_for_slot_since, count_remote_deferred_for_slot);
           _in_flight.emplace(easy, std::move(transfer));
         } catch (...) {
           // Requeue the in-hand transfer (unless already failed above) and the already-deferred
@@ -353,6 +375,7 @@ void MultiPollReactor::io_thread_main()
                       std::runtime_error);
         auto transfer = std::move(it->second);
         _in_flight.erase(it);
+        detail::count_http_transfer_of(easy);
 
         std::exception_ptr transfer_err;
         try {
@@ -397,6 +420,9 @@ void MultiPollReactor::io_thread_main()
 
             if (outcome.decision == RetryDecision::RETRY) {
               KVIKIO_LOG_WARN(outcome.message);
+              // The transfer is held back for the backoff and then tried again, which nothing
+              // else reports once it eventually succeeds.
+              count_http_retry(outcome.delay_ms);
               auto const ready_at = std::chrono::steady_clock::now() + outcome.delay_ms;
               // If a shorter backoff appears
               if (earliest_ready_at.has_value()) {

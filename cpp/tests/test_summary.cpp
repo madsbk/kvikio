@@ -669,6 +669,55 @@ TEST_F(SummaryTest, bytes_that_are_not_a_summary_are_refused)
   EXPECT_THROW(std::ignore = Summary::deserialize(other_endian), std::invalid_argument);
 }
 
+TEST_F(SummaryTest, the_internal_costs_are_those_of_the_span)
+{
+  std::vector<std::uint64_t> buffer(_data.size());
+  // Warm the bounce buffers before the monitor exists, so anything it reports was paid inside it.
+  {
+    kvikio::FileHandle f{_filepath, "r"};
+    f.pread(buffer.data(), nbytes(), 0).get();
+  }
+
+  SummaryMonitor monitor;
+  auto const before = monitor.get().internals;
+  EXPECT_TRUE(before.empty()) << "a monitor starts owing nothing";
+  {
+    kvikio::FileHandle f{_filepath, "r"};
+    f.pread(buffer.data(), nbytes(), 0).get();
+  }
+
+  auto const spent = monitor.get().internals;
+  EXPECT_GE(spent.bounce_buffer_acquisitions, before.bounce_buffer_acquisitions);
+  // The summary carries both halves, the I/O and what KvikIO spent to do it.
+  auto const report = monitor.get().report();
+  EXPECT_EQ(report.find("KvikIO I/O summary"), 0);
+  if (spent.posix_calls != 0) {
+    EXPECT_NE(report.find("file system"), std::string::npos);
+    EXPECT_NE(monitor.get().to_json().find("\"internals\""), std::string::npos);
+  }
+
+  monitor.reset();
+  EXPECT_TRUE(monitor.get().internals.empty()) << "reset moved the span, so nothing is owed again";
+}
+
+TEST_F(SummaryTest, an_interval_owes_only_what_it_spent)
+{
+  std::vector<std::uint64_t> buffer(_data.size());
+  SummaryMonitor const monitor;
+  kvikio::FileHandle f{_filepath, "r"};
+
+  f.pread(buffer.data(), nbytes(), 0).get();
+  auto const first = monitor.get();
+  f.pread(buffer.data(), nbytes(), 0).get();
+
+  // The internals of an interval are the difference of two readings, like every other total.
+  auto const second   = monitor.get();
+  auto const interval = second.since(first);
+  EXPECT_EQ(interval.internals.posix_bytes,
+            second.internals.posix_bytes - first.internals.posix_bytes);
+  EXPECT_GT(interval.internals.posix_calls, 0);
+}
+
 TEST_F(SummaryTest, the_report_is_human_readable)
 {
   std::vector<std::uint64_t> buffer(_data.size());

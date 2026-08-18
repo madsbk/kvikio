@@ -160,7 +160,8 @@ std::string Summary::to_json() const
      << ", \"busy_ns\": " << busy.count() << ", \"total_duration_ns\": " << total_duration.count()
      << ", \"busy_bytes_per_sec\": " << busy_bytes_per_sec()
      << ", \"busy_fraction\": " << busy_fraction()
-     << ", \"mean_duration_ns\": " << mean_duration().count() << ", \"by_backend\": {";
+     << ", \"mean_duration_ns\": " << mean_duration().count()
+     << ", \"internals\": " << internals.to_json() << ", \"by_backend\": {";
   for (std::size_t i = 0; i < num_io_backends; ++i) {
     auto const& totals = by_backend[i];
     if (i != 0) { os << ", "; }
@@ -174,7 +175,7 @@ std::string Summary::to_json() const
   return os.str();
 }
 
-std::string Summary::report() const
+std::string Summary::report(Internals::Rows rows) const
 {
   std::ostringstream os;
   // The width is that of the widest label below, so the values line up.
@@ -232,6 +233,9 @@ std::string Summary::report() const
     if (totals.num_errors != 0) { value << ", " << totals.num_errors << " failed"; }
     row(label, value.str());
   }
+  // Last, since these are what KvikIO spent on itself rather than what the run asked for. A row is
+  // omitted when its counters are zero, so what appears is what the run actually touched.
+  os << internals.report(rows);
   return os.str();
 }
 
@@ -244,10 +248,11 @@ SummaryMonitor::SummaryMonitor(Callback on_destruction) : _on_destruction{std::m
   // rather than by only one of them, which would leave the tracker's in-flight count unbalanced.
   _registration = register_monitor(this);
   std::lock_guard const lock{_mutex};
-  auto const t   = detail::now();
-  _totals.start  = t;
-  _totals.anchor = ClockAnchor::now();
-  _registered    = t;
+  auto const t        = detail::now();
+  _totals.start       = t;
+  _totals.anchor      = ClockAnchor::now();
+  _registered         = t;
+  _internals_at_start = statistics::internals();
   _busy.reset(t);
 }
 
@@ -352,8 +357,13 @@ void SummaryMonitor::on_finish(Observation const& observation) noexcept
 
 Summary SummaryMonitor::get() const
 {
+  // Read before the lock, since the counters take no lock of their own and this one guards the
+  // rest.
+  auto const current_internals = statistics::internals();
+
   std::lock_guard const lock{_mutex};
-  Summary ret = _totals;
+  Summary ret   = _totals;
+  ret.internals = current_internals.since(_internals_at_start);
   // Measured to the same instant the reading is stamped with, inside the lock, so that busy time
   // can never run past the end of the span it is divided by and `busy_fraction()` stays <= 1.
   ret.end  = _stopped_end != TimePoint{} ? _stopped_end : detail::now();
@@ -398,6 +408,7 @@ Summary Summary::since(Summary const& previous) const
                  .bytes_written     = subtract(bytes_written, previous.bytes_written),
                  .num_errors        = subtract(num_errors, previous.num_errors),
                  .by_backend        = backends,
+                 .internals         = internals.since(previous.internals),
                  .total_duration    = subtract(total_duration, previous.total_duration),
                  .busy              = subtract(busy, previous.busy)};
 }
@@ -407,11 +418,12 @@ Summary SummaryMonitor::since(Summary const& previous) const { return get().sinc
 void SummaryMonitor::reset()
 {
   std::lock_guard const lock{_mutex};
-  auto const t      = detail::now();
-  auto const anchor = _totals.anchor;
-  _totals           = Summary{};
-  _totals.start     = t;
-  _totals.anchor    = anchor;
+  auto const t        = detail::now();
+  auto const anchor   = _totals.anchor;
+  _totals             = Summary{};
+  _totals.start       = t;
+  _totals.anchor      = anchor;
+  _internals_at_start = statistics::internals();
   // Keeps `busy <= wall()` across the reset: an operation already in flight contributes only the
   // part of its span that follows it.
   _busy.reset(t);

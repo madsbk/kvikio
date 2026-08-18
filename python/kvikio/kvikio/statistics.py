@@ -91,9 +91,31 @@ class Summary:
     backend. There is no per-backend busy time, that being a union over wall time which
     two backends running at once would both claim.
 
-    Excluded from :func:`hash` as the only unhashable field, and only from that. It
-    still takes part in ``==``, so two summaries that differ here are unequal, they
-    merely share a hash bucket.
+    Excluded from :func:`hash`, as an unhashable field, and only from that. It still
+    takes part in ``==``, so two summaries that differ here are unequal, they merely
+    share a hash bucket.
+    """
+
+    internals: dict[str, int] = field(hash=False)
+    """What KvikIO spent on itself during the span, rather than on I/O
+
+    The bounce buffers acquired and allocated, the time that took and the bytes still
+    held. The reads and writes issued to the file system, their bytes and their time. The
+    copies staged between a bounce buffer and the device, and the copies made because a
+    host buffer was not page aligned. The files registered with cuFile. The remote file
+    sizes probed, the connections libcurl opened and what they spent on DNS, connecting
+    and TLS, the requests that finished with their bytes and the time spent waiting for
+    the first byte and receiving the rest, the requests that were retried, and the
+    transfers held back for want of a bounce buffer or a concurrency slot.
+
+    The counters run for the life of the process, and this is the part of them that falls
+    inside the span, so buffers allocated before the monitor existed are not charged to
+    it.
+
+    :meth:`report` prints these in three groups, buffers, local I/O and remote I/O, and
+    leaves out a group the run never touched. Pass ``all_rows=True`` for every row.
+
+    Excluded from :func:`hash` for the same reason as :attr:`by_backend`.
     """
 
     wall_ns: int
@@ -215,17 +237,24 @@ class Summary:
         # The C++ handle cannot be pickled, so a summary travels as its bytes.
         return (Summary.deserialize, (self.serialize(),))
 
-    def report(self) -> str:
+    def report(self, all_rows: bool = False) -> str:
         """Format a human-readable report of every field
 
         Byte counts, durations and rates are scaled to readable units. Use
         :meth:`to_json` instead when the output is going to be parsed.
 
+        Parameters
+        ----------
+        all_rows : bool, optional
+            Print every :attr:`internals` row, including the subsystems the run never
+            touched, which is one way to see what KvikIO records at all. The rest of the
+            report is the same either way.
+
         Returns
         -------
         The report, one field per line, newline-terminated.
         """
-        return self._handle.report()
+        return self._handle.report(all_rows)
 
     def __str__(self) -> str:
         return self.report()

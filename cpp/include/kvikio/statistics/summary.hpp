@@ -15,6 +15,7 @@
 
 #include <kvikio/observation.hpp>
 #include <kvikio/shim/utils.hpp>
+#include <kvikio/statistics/internals.hpp>
 
 /**
  * @brief KvikIO namespace.
@@ -76,6 +77,15 @@ struct Summary {
   /// What each backend carried, indexed by `IoBackend`. Compatibility mode decides per call
   /// whether a read reaches cuFile or falls back to POSIX, so this is where that shows.
   std::array<BackendTotals, num_io_backends> by_backend{};
+
+  /**
+   * @brief What KvikIO spent on itself during the span, rather than on I/O.
+   *
+   * Bounce buffers allocated, files registered with cuFile, time inside the file system. The
+   * counters run for the life of the process, and this is the part of them that falls inside the
+   * span.
+   */
+  Internals internals{};
 
   /// The operations' durations added up, every operation counted.
   Duration total_duration{};
@@ -188,9 +198,11 @@ struct Summary {
    *   ...
    * @endcode
    *
+   * @param rows Which of the `internals` rows to print. The rest of the report is the same
+   * either way.
    * @return The report, one field per line, newline-terminated.
    */
-  [[nodiscard]] std::string report() const;
+  [[nodiscard]] std::string report(Internals::Rows rows = Internals::Rows::USED) const;
 };
 
 /**
@@ -354,6 +366,9 @@ class SummaryMonitor final : private kvikio::Monitor {
   /// Serializes `stop()`, which cannot use `_mutex`, since `unregister_monitor()` waits for
   /// notifications that take it.
   std::mutex _stopping;
+
+  /// The internal counters as they stood when the span began, so the reading is a difference.
+  Internals _internals_at_start{};
 
   /**
    * @brief What every reading is a copy of.
